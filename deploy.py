@@ -26,6 +26,11 @@ from tongflow import deploy
 
 _cfg: dict[str, Any] = {}
 
+# Cover defaults: a score-conditioned render follows the source arrangement
+# unless text guidance is on, so covers default to CFG 2.0 (1.0 disables it).
+COVER_CFG_SCALE = 2.0
+COVER_TRANSPOSE = -3
+
 # Pinned source + weight revisions (see download.py, which fetches the same).
 REPO_URL = "https://github.com/multimodal-art-projection/YuE.git"
 REPO_REV = "88da114a67df892af0329472073b96a5ef700b93"
@@ -89,14 +94,14 @@ TONGFLOW_SLOT_PARAMS = {
         },
         "transpose": {
             "type": "integer",
-            "default": 0,
+            "default": -3,
             "min": -12,
             "max": 12,
             "step": 1,
             "label": "Transpose (semitones)",
             "description": "Shift the source key before transcription; negative lowers it (e.g. -3 for a male voice)",
         },
-        "cfg_scale": {"type": "number", "default": 1.0, "min": 0.0, "max": 5.0, "step": 0.05, "label": "Text guidance (CFG)"},
+        "cfg_scale": {"type": "number", "default": 2.0, "min": 0.0, "max": 5.0, "step": 0.05, "label": "Text guidance (CFG)"},
         "temperature": {"type": "number", "default": 1.0, "min": 0.1, "max": 2.0, "step": 0.05, "label": "Temperature"},
         "top_p": {"type": "number", "default": 0.95, "min": 0.05, "max": 1.0, "step": 0.01, "label": "Top-p"},
     },
@@ -247,7 +252,9 @@ class Inference:
             progress=False,
         )
 
-    def _render(self, *, style: str, lyrics: str, cot: str, seed: int, abc: str | None = None) -> bytes:
+    def _render(
+        self, *, style: str, lyrics: str, cot: str, seed: int, cfg_scale: float | None, abc: str | None = None
+    ) -> bytes:
         import io
 
         import soundfile as sf
@@ -259,7 +266,7 @@ class Inference:
             cot=cot,
             seed=seed,
             abc=abc,
-            cfg_scale=_cfg_scale(),
+            cfg_scale=cfg_scale,
             semantic_sampling=sampling,
         )
         buf = io.BytesIO()
@@ -286,6 +293,7 @@ class Inference:
                 lyrics=lyrics,
                 cot=_adv("cot", "full"),
                 seed=_seed(input.seed),
+                cfg_scale=_cfg_scale(),
             )
         except Exception as e:
             return GenMusicOutput(success=False, error=str(e))
@@ -305,12 +313,13 @@ class Inference:
         try:
             with asset_as_path(input.audio) as src:
                 data = Path(src).read_bytes()
-            abc = Transcriber().transcribe.remote(data, cot == "melody", _adv("transpose", 0))
+            abc = Transcriber().transcribe.remote(data, cot == "melody", _adv("transpose", COVER_TRANSPOSE))
             raw = self._render(
                 style=style,
                 lyrics=lyrics,
                 cot=cot,
                 seed=_seed(input.seed),
+                cfg_scale=_adv("cfg_scale", COVER_CFG_SCALE),
                 abc=abc,
             )
         except Exception as e:
