@@ -18,6 +18,7 @@ Deploy:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +102,15 @@ TONGFLOW_SLOT_PARAMS = {
             "label": "Transpose (semitones)",
             "description": "Shift the source key before transcription; negative lowers it (e.g. -3 for a male voice)",
         },
+        "bpm": {
+            "type": "integer",
+            "default": 0,
+            "min": 0,
+            "max": 240,
+            "step": 1,
+            "label": "Target BPM",
+            "description": "0 keeps the tempo (a BPM written in the prompt, else the source's); any other value re-tempos the score and the prompt",
+        },
         "cfg_scale": {"type": "number", "default": 2.0, "min": 0.0, "max": 5.0, "step": 0.05, "label": "Text guidance (CFG)"},
         "temperature": {"type": "number", "default": 1.0, "min": 0.1, "max": 2.0, "step": 0.05, "label": "Temperature"},
         "top_p": {"type": "number", "default": 0.95, "min": 0.05, "max": 1.0, "step": 0.01, "label": "Top-p"},
@@ -163,6 +173,44 @@ def _cfg_scale() -> float | None:
     # None keeps YuE2's per-mode default guidance.
     v = current_params().get("cfg_scale")
     return None if v is None else float(v)
+
+
+_ABC_TEMPO = re.compile(r"^Q:\s*(?:(\d+/\d+)\s*=\s*)?(\d+(?:\.\d+)?)\s*$", re.M)
+_STYLE_BPM = re.compile(r"(\d{2,3}(?:\.\d+)?)\s*BPM\b", re.I)
+
+
+def _sync_tempo(abc: str, style: str, target_bpm: int) -> tuple[str, str]:
+    """Keep the score tempo (``Q:``) and the style prompt's BPM consistent.
+
+    YuE2 expects tempo in the ABC and a matching description in the style.
+    Precedence: the ``bpm`` advanced param, then a BPM written in the style,
+    then the transcribed source tempo. The chosen tempo is written to both.
+    """
+    source = _ABC_TEMPO.search(abc)
+    in_style = _STYLE_BPM.search(style)
+    if target_bpm and target_bpm > 0:
+        bpm = int(target_bpm)
+    elif in_style:
+        bpm = int(round(float(in_style.group(1))))
+    elif source:
+        bpm = int(round(float(source.group(2))))
+    else:
+        return abc, style
+
+    if source:
+        unit = source.group(1) or "1/4"
+        abc = abc[: source.start()] + f"Q:{unit}={bpm}" + abc[source.end() :]
+    else:
+        # K: closes the ABC header, so the tempo line goes right before it.
+        key = re.search(r"^K:", abc, re.M)
+        at = key.start() if key else 0
+        abc = abc[:at] + f"Q:1/4={bpm}\n" + abc[at:]
+
+    if in_style:
+        style = style[: in_style.start()] + f"{bpm} BPM" + style[in_style.end() :]
+    else:
+        style = f"{style.rstrip().rstrip(',')}, {bpm} BPM"
+    return abc, style
 
 
 def _pitch_shift(audio: bytes, semitones: int) -> bytes:
@@ -314,6 +362,7 @@ class Inference:
             with asset_as_path(input.audio) as src:
                 data = Path(src).read_bytes()
             abc = Transcriber().transcribe.remote(data, cot == "melody", _adv("transpose", COVER_TRANSPOSE))
+            abc, style = _sync_tempo(abc, style, _adv("bpm", 0))
             raw = self._render(
                 style=style,
                 lyrics=lyrics,

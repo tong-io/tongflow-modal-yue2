@@ -18,6 +18,7 @@ YuE2 first writes an editable melody-and-chord score (ABC), then renders it as a
 - **Covers** don't transcribe words: supply the lyrics to sing, aligned with the source's sections. The cover node's *strength* and *reference audio* inputs are not used.
 - Duration is not controllable; song length follows the lyrics and the score.
 - **Advanced:** score planning mode (`full` / `melody` / `off`), text guidance, temperature, top-p. Covers also offer **Transpose (semitones)**: the source is pitch-shifted before transcription, so the cover is sung in the new key at the original tempo (e.g. `-3` to suit a lower voice).
+- **Tempo (covers):** the score tempo and the prompt's BPM are kept in sync, as YuE2 expects. Precedence: the **Target BPM** advanced param → a `NNN BPM` written in the prompt → the transcribed source tempo. The chosen tempo is written into both the score (`Q:`) and the prompt, so `Heavy metal, …, 160 BPM` re-tempos a slow source.
 
 ## Credentials
 
