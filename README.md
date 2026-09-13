@@ -17,7 +17,7 @@ YuE2 first writes an editable melody-and-chord score (ABC), then renders it as a
 - **Lyrics** are required. Use section tags such as `[Verse]` and `[Chorus]`.
 - **Covers** don't transcribe words: supply the lyrics to sing, aligned with the source's sections. The cover node's *strength* and *reference audio* inputs are not used.
 - Duration is not controllable; song length follows the lyrics and the score.
-- **Advanced:** score planning mode (`full` / `melody` / `off`), text guidance, temperature, top-p.
+- **Advanced:** score planning mode (`full` / `melody` / `off`), text guidance, temperature, top-p. Covers also offer **Transpose (semitones)**: the source is pitch-shifted before transcription, so the cover is sung in the new key at the original tempo (e.g. `-3` to suit a lower voice).
 
 ## Credentials
 

@@ -87,6 +87,15 @@ TONGFLOW_SLOT_PARAMS = {
             "label": "Source score",
             "description": "melody: keep the melody, re-arrange freely; full: also keep the source chords",
         },
+        "transpose": {
+            "type": "integer",
+            "default": 0,
+            "min": -12,
+            "max": 12,
+            "step": 1,
+            "label": "Transpose (semitones)",
+            "description": "Shift the source key before transcription; negative lowers it (e.g. -3 for a male voice)",
+        },
         "cfg_scale": {"type": "number", "default": 1.0, "min": 0.0, "max": 5.0, "step": 0.05, "label": "Text guidance (CFG)"},
         "temperature": {"type": "number", "default": 1.0, "min": 0.1, "max": 2.0, "step": 0.05, "label": "Temperature"},
         "top_p": {"type": "number", "default": 0.95, "min": 0.05, "max": 1.0, "step": 0.01, "label": "Top-p"},
@@ -151,6 +160,30 @@ def _cfg_scale() -> float | None:
     return None if v is None else float(v)
 
 
+def _pitch_shift(audio: bytes, semitones: int) -> bytes:
+    """Shift pitch by resampling, then restore the original tempo with atempo.
+
+    The shifted audio only feeds transcription, so resampling artifacts are
+    irrelevant; what matters is that the score lands in the new key at the
+    original tempo.
+    """
+    import subprocess
+
+    ratio = 2 ** (semitones / 12)
+    rate = 44100
+    af = f"aresample={rate},asetrate={rate * ratio:.4f},aresample={rate},atempo={1 / ratio:.6f}"
+    r = subprocess.run(
+        ["ffmpeg", "-v", "error", "-nostdin", "-i", "pipe:0", "-vn", "-af", af, "-f", "wav", "pipe:1"],
+        input=audio,
+        capture_output=True,
+        timeout=600,
+        check=False,
+    )
+    if r.returncode:
+        raise RuntimeError("Pitch shift failed: " + r.stderr.decode(errors="replace")[-600:])
+    return r.stdout
+
+
 @app.cls(
     scaledown_window=2,
     image=transcribe_image,
@@ -177,7 +210,9 @@ class Transcriber:
         ).eval().to("cuda")
 
     @modal.method()
-    def transcribe(self, audio: bytes, melody_only: bool) -> str:
+    def transcribe(self, audio: bytes, melody_only: bool, semitones: int = 0) -> str:
+        if semitones:
+            audio = _pitch_shift(audio, semitones)
         result = self.model.transcribe(audio, melody_only=melody_only)
         abc = result.get("abc")
         if not abc or result.get("abc_error"):
@@ -270,7 +305,7 @@ class Inference:
         try:
             with asset_as_path(input.audio) as src:
                 data = Path(src).read_bytes()
-            abc = Transcriber().transcribe.remote(data, cot == "melody")
+            abc = Transcriber().transcribe.remote(data, cot == "melody", _adv("transpose", 0))
             raw = self._render(
                 style=style,
                 lyrics=lyrics,
