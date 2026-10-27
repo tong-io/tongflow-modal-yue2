@@ -1,7 +1,7 @@
 {
     "plugin": {
         "name": "YuE2",
-        "description": "Lyrics-to-song generation with editable score planning, plus zero-shot covers via SheetSage2 transcription. Weights: CC BY-NC 4.0 (non-commercial).",
+        "description": "Lyrics-to-song generation with editable score planning, instrumentals, plus zero-shot covers via SheetSage2 transcription. Weights: CC BY-NC 4.0; individual creators may monetize outputs.",
         "icon": "/plugins/tongflow-modal-yue2.svg"
     },
     "env": [

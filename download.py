@@ -32,7 +32,7 @@ HF_CACHE_DIR = "/models/yue2-hf"
 _REPOS: list[tuple[str, str, list[str]]] = [
     ("m-a-p/YuE2-3B", "29b3558dd46954a0cd9021dc76d5c91864a0f1c7", ["assets/*", "*.whl"]),
     ("m-a-p/YuE2-Vae", "9a94e1d0ea9f8087e98f77fa88df4a4068104d2a", ["assets/*"]),
-    ("m-a-p/SheetSage2", "eab522a8168e8b8b8c4856bf8609cd86198f01fe", ["assets/*", "render_assets/soundfonts/*"]),
+    ("m-a-p/SheetSage2", "b83c3d79a6d98bcffaf8f9ed112c90aa887887bc", ["assets/*", "render_assets/soundfonts/*"]),
     ("m-a-p/MERT-v2-FullSong", "d8ba1c745e733b3908ce6ad16ebeb17ac7600a42", ["assets/*"]),
 ]
 

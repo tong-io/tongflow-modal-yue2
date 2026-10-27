@@ -6,11 +6,17 @@ weights m-a-p/YuE2-3B + m-a-p/YuE2-Vae) as TongFlow music nodes:
   - music-cover: source audio -> SheetSage2 melody score -> YuE2 re-performs it
     in the requested style with the supplied lyrics
 
+Both slots also render instrumentals (no lyrics, or the "instrumental" advanced
+param): the score's Vocal notes move to the Ins voice before rendering, using
+the upstream yue2-music instrumental tools (MIT) from the pinned source tree.
+
 SheetSage2 pins torch 2.8 / transformers 4.45 while YuE2 pins torch 2.10 /
 transformers 4.57, so transcription runs in its own class and image; the YuE2
 handler calls it remotely and exchanges only audio bytes and ABC text.
 
-Weights are licensed CC BY-NC 4.0 (non-commercial use only).
+Weights are licensed CC BY-NC 4.0; since 2026-09-16 the licensors also let
+individual creators monetize generated outputs (companies still need a
+commercial license). See the upstream MODEL_LICENSE.
 
 Deploy:
   modal deploy deploy.py
@@ -34,13 +40,19 @@ COVER_TRANSPOSE = -3
 
 # Pinned source + weight revisions (see download.py, which fetches the same).
 REPO_URL = "https://github.com/multimodal-art-projection/YuE.git"
-REPO_REV = "88da114a67df892af0329472073b96a5ef700b93"
+REPO_REV = "1647252d68b70cbead046ffd3f7caf036dde47ee"
 YUE2_MODEL = ("m-a-p/YuE2-3B", "29b3558dd46954a0cd9021dc76d5c91864a0f1c7")
 YUE2_VAE = ("m-a-p/YuE2-Vae", "9a94e1d0ea9f8087e98f77fa88df4a4068104d2a")
-SHEETSAGE2 = ("m-a-p/SheetSage2", "eab522a8168e8b8b8c4856bf8609cd86198f01fe")
+SHEETSAGE2 = ("m-a-p/SheetSage2", "b83c3d79a6d98bcffaf8f9ed112c90aa887887bc")
 
 # Hugging Face cache on the shared `models` volume, populated by download.py.
 HF_CACHE_DIR = "/models/yue2-hf"
+
+# Source checkout baked into the YuE2 image for the instrumental score tools.
+SRC_DIR = "/opt/yue2"
+INSTRUMENTAL_TOOLS = f"{SRC_DIR}/skills/yue2-music/instrumental/scripts"
+# Planner-only structure when an instrumental has no lyrics (upstream default).
+INSTRUMENTAL_PLAN_LYRICS = "[Intro]\n\n[Verse]\n\n[Chorus]\n\n[Outro]\n"
 
 SAMPLE_RATE = 48000
 
@@ -79,7 +91,13 @@ TONGFLOW_SLOT_PARAMS = {
             "options": ["full", "melody", "off"],
             "default": "full",
             "label": "Score planning",
-            "description": "full: plan melody + chords; melody: plan melody only; off: no score",
+            "description": "full: plan melody + chords; melody: plan melody only; off: no score (instrumentals always plan a score)",
+        },
+        "instrumental": {
+            "type": "boolean",
+            "default": False,
+            "label": "Instrumental",
+            "description": "No vocals: the planned vocal melody moves to an instrument. Lyrics, if any, only shape the song structure. Empty lyrics always give an instrumental",
         },
         "cfg_scale": {"type": "number", "default": 1.0, "min": 0.0, "max": 5.0, "step": 0.05, "label": "Text guidance (CFG)"},
         "temperature": {"type": "number", "default": 1.0, "min": 0.1, "max": 2.0, "step": 0.05, "label": "Temperature"},
@@ -93,6 +111,12 @@ TONGFLOW_SLOT_PARAMS = {
             "label": "Source score",
             "description": "melody: keep the melody, re-arrange freely; full: also keep the source chords",
         },
+        "instrumental": {
+            "type": "boolean",
+            "default": False,
+            "label": "Instrumental",
+            "description": "No vocals: an instrument plays the source melody and lyrics are ignored. Empty lyrics always give an instrumental",
+        },
         "transpose": {
             "type": "integer",
             "default": -3,
@@ -100,7 +124,7 @@ TONGFLOW_SLOT_PARAMS = {
             "max": 12,
             "step": 1,
             "label": "Transpose (semitones)",
-            "description": "Shift the source key before transcription; negative lowers it (e.g. -3 for a male voice)",
+            "description": "Shift the source key before transcription; negative lowers it (e.g. -3 for a male voice). Instrumental covers keep the source key unless set",
         },
         "bpm": {
             "type": "integer",
@@ -127,7 +151,8 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git", "libsndfile1")
     .pip_install(f"yue2-infer @ git+{REPO_URL}@{REPO_REV}")
-    .pip_install("tongflow==0.3.3", "fastapi[standard]")
+    .run_commands(f"git clone -q {REPO_URL} {SRC_DIR} && git -C {SRC_DIR} checkout -q {REPO_REV}")
+    .pip_install("tongflow==0.3.4", "fastapi[standard]")
     .env(_hf_env)
 )
 
@@ -152,7 +177,7 @@ transcribe_image = (
         "mido==1.3.3",
         "setuptools==78.1.1",
     )
-    .pip_install("tongflow==0.3.3")
+    .pip_install("tongflow==0.3.4")
     .env(_hf_env)
 )
 
@@ -211,6 +236,37 @@ def _sync_tempo(abc: str, style: str, target_bpm: int) -> tuple[str, str]:
     else:
         style = f"{style.rstrip().rstrip(',')}, {bpm} BPM"
     return abc, style
+
+
+def _instrumental_style(style: str) -> str:
+    """Mark the style as instrumental the way the upstream tools do."""
+    style = style.strip().rstrip(".,")
+    if not re.match(r"^instrumental\b", style, re.I):
+        style = "Instrumental, " + style
+    for condition in ("no vocals", "no singing", "no choir", "no spoken words"):
+        if condition not in style.lower():
+            style += ", " + condition
+    return style + "."
+
+
+def _instrumentalize(abc: str, keep_chords: bool) -> tuple[str, str, str]:
+    """Move the score's Vocal notes to Ins.
+
+    Returns the converted ABC, its section-tag-only lyrics and the matching cot
+    (full when chord symbols survive, else melody), as YuE2 expects for an
+    instrumental render.
+    """
+    import sys
+
+    if INSTRUMENTAL_TOOLS not in sys.path:
+        sys.path.insert(0, INSTRUMENTAL_TOOLS)
+    from abc_tools import parse_abc
+    from instrumental import lyric_tags
+    from instrumentalize import convert_score
+
+    converted, _ = convert_score(abc, keep_chords=keep_chords)
+    cot = "full" if parse_abc(converted).voices["Vocal"].chords else "melody"
+    return converted, lyric_tags(converted), cot
 
 
 def _pitch_shift(audio: bytes, semitones: int) -> bytes:
@@ -325,24 +381,35 @@ class Inference:
     @node_slot(NodeSlots.GEN_MUSIC)
     def gen_music(self, input: GenMusicInput) -> GenMusicOutput:
         lyrics = (input.lyrics or "").strip()
-        if not lyrics:
-            return GenMusicOutput(success=False, error="Missing lyrics")
+        instrumental = not lyrics or _adv("instrumental", False)
         # YuE2 has no separate bpm/key/language fields: they belong in the style
         # prompt (its examples lead with the language and end with the tempo).
-        parts = [input.language, input.text, input.tags, input.keyscale]
+        # Language describes the vocals, so instrumentals leave it out.
+        parts = [None if instrumental else input.language, input.text, input.tags, input.keyscale]
         if input.bpm:
             parts.append(f"{int(round(input.bpm))} BPM")
         style = ", ".join(p.strip() for p in parts if p and p.strip())
         if not style:
             return GenMusicOutput(success=False, error="Missing style prompt")
+        seed, cfg_scale, cot = _seed(input.seed), _cfg_scale(), _adv("cot", "full")
         try:
-            raw = self._render(
-                style=style,
-                lyrics=lyrics,
-                cot=_adv("cot", "full"),
-                seed=_seed(input.seed),
-                cfg_scale=_cfg_scale(),
-            )
+            if instrumental:
+                # YuE2 plans a song score (lyrics only shape its structure),
+                # then renders it again with every vocal note on an instrument.
+                style = _instrumental_style(style)
+                plan = self.pipe.plan(
+                    style=style,
+                    lyrics=lyrics or INSTRUMENTAL_PLAN_LYRICS,
+                    cot="melody" if cot == "melody" else "full",
+                    seed=seed,
+                    cfg_scale=cfg_scale,
+                )
+                if plan.truncated or not plan.abc:
+                    raise RuntimeError("YuE2 produced an empty or truncated score; try another seed")
+                abc, lyrics, cot = _instrumentalize(plan.abc, keep_chords=True)
+            else:
+                abc = None
+            raw = self._render(style=style, lyrics=lyrics, cot=cot, seed=seed, cfg_scale=cfg_scale, abc=abc)
         except Exception as e:
             return GenMusicOutput(success=False, error=str(e))
         return GenMusicOutput(success=True, audio=asset(raw, mime="audio/flac"))
@@ -353,16 +420,21 @@ class Inference:
         style = (input.text or "").strip()
         if not style:
             return MusicCoverOutput(success=False, error="Missing target style prompt")
-        # SheetSage2 transcribes notes, not words: the cover sings these lyrics.
+        # SheetSage2 transcribes notes, not words: the cover sings these lyrics,
+        # and without any it becomes an instrumental cover.
         lyrics = (input.lyrics or "").strip()
-        if not lyrics:
-            return MusicCoverOutput(success=False, error="Missing lyrics (YuE2 covers sing the supplied lyrics)")
+        instrumental = not lyrics or _adv("instrumental", False)
         cot = _adv("cot", "melody")
+        # The default transpose suits a lower voice; instruments keep the key.
+        transpose = _adv("transpose", 0 if instrumental else COVER_TRANSPOSE)
         try:
             with asset_as_path(input.audio) as src:
                 data = Path(src).read_bytes()
-            abc = Transcriber().transcribe.remote(data, cot == "melody", _adv("transpose", COVER_TRANSPOSE))
+            abc = Transcriber().transcribe.remote(data, cot == "melody", transpose)
             abc, style = _sync_tempo(abc, style, _adv("bpm", 0))
+            if instrumental:
+                style = _instrumental_style(style)
+                abc, lyrics, cot = _instrumentalize(abc, keep_chords=cot == "full")
             raw = self._render(
                 style=style,
                 lyrics=lyrics,
