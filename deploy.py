@@ -152,7 +152,7 @@ image = (
     .apt_install("git", "libsndfile1")
     .pip_install(f"yue2-infer @ git+{REPO_URL}@{REPO_REV}")
     .run_commands(f"git clone -q {REPO_URL} {SRC_DIR} && git -C {SRC_DIR} checkout -q {REPO_REV}")
-    .pip_install("tongflow==0.3.4", "fastapi[standard]")
+    .pip_install("tongflow==1.0.0", "fastapi[standard]")
     .env(_hf_env)
 )
 
@@ -177,7 +177,7 @@ transcribe_image = (
         "mido==1.3.3",
         "setuptools==78.1.1",
     )
-    .pip_install("tongflow==0.3.4")
+    .pip_install("tongflow==1.0.0")
     .env(_hf_env)
 )
 
